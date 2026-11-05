@@ -664,13 +664,22 @@ func (p *Plugin) getClusterProvider() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("creating config client: %w", err)
 	}
-	infra, err := oc.ConfigV1().Infrastructures().Get(context.TODO(), "cluster", kmmetav1.GetOptions{})
+	// Bound the detection so a hanging API server cannot block the plugin
+	// initialization; on timeout the provider flag is skipped with a warning.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	infra, err := oc.ConfigV1().Infrastructures().Get(ctx, "cluster", kmmetav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("reading infrastructure cluster: %w", err)
 	}
+	// Prefer status.platformStatus.type, falling back to spec.platformSpec.type
+	// (the field platform.sh uses) when status is not yet populated.
 	platform := ""
 	if infra.Status.PlatformStatus != nil {
 		platform = string(infra.Status.PlatformStatus.Type)
+	}
+	if platform == "" {
+		platform = string(infra.Spec.PlatformSpec.Type)
 	}
 	if strings.EqualFold(platform, "external") {
 		return `{"type":"external"}`, nil
