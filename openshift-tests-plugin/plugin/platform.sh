@@ -109,6 +109,19 @@ function setup_provider_vsphere() {
     echo "${OPENSHIFT_TESTS_EXTRA_ARGS}" > /tmp/shared/platform-args
 }
 
+function setup_provider_external() {
+    os_log_info "[executor] setting provider configuration for [${PLATFORM_TYPE}]"
+
+    # openshift-tests args: tests configured to skip on platform type External
+    # are ignored instead of scheduled as known failures. See OPCT-357.
+    # The provider flag is also set by the plugin on the run command; this
+    # keeps the platform-args metadata consistent with other providers.
+    export TEST_PROVIDER='{"type":"external"}'
+    OPENSHIFT_TESTS_EXTRA_ARGS+="--provider ${TEST_PROVIDER}"
+
+    echo "${OPENSHIFT_TESTS_EXTRA_ARGS}" > /tmp/shared/platform-args
+}
+
 
 # Check the platform type
 os_log_info "[executor] discovering platform type..."
@@ -122,6 +135,7 @@ case $PLATFORM_TYPE in
     aws)     setup_provider_aws ;;
     gcp) setup_provider_gcp ;;
     vsphere) setup_provider_vsphere ;;
-    none|external) echo "INFO: platform type [${PLATFORM_TYPE}] does not require credentials for tests." ;;
+    external) setup_provider_external ;;
+    none) echo "INFO: platform type [${PLATFORM_TYPE}] does not require credentials for tests." ;;
     *) echo "WARN: provider setup is ignored or not supported for platform type=[${PLATFORM_TYPE}]" ;;
 esac

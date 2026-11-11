@@ -283,6 +283,19 @@ func (p *Plugin) Initialize() error {
 	p.clientKube = kcli
 	p.clientSonobuoy = sbcli
 
+	// OPCT-357: set the openshift-tests provider flag for platforms that
+	// require it, so tests configured to skip on that platform are ignored
+	// instead of scheduled as known failures.
+	if p.OTRunner != nil {
+		provider, err := p.getClusterProvider()
+		if err != nil {
+			log.Warnf("unable to detect the cluster platform, not setting the provider flag: %v", err)
+		} else if provider != "" {
+			p.OTRunner.Provider = provider
+			log.Infof("Cluster platform requires provider flag: setting openshift-tests --provider=%q", provider)
+		}
+	}
+
 	// Set top level env vars from config
 	// TODO move env vars discovery to a separate function
 
@@ -635,6 +648,43 @@ func (p *Plugin) RunReportProgress() {
 			log.Infof(">> Preliminary summary: %s", p.Progress.GetTotalCountersString())
 		}
 	}()
+}
+
+// getClusterProvider returns the value for the openshift-tests --provider
+// flag when the cluster's infrastructure platform requires one. Currently
+// only platform type External sets a provider (OPCT-357); on other platforms
+// an empty string is returned and openshift-tests auto-discovers the
+// provider from the cluster.
+func (p *Plugin) getClusterProvider() (string, error) {
+	restConfig, err := CreateKubeRestConfig()
+	if err != nil {
+		return "", fmt.Errorf("creating rest config: %w", err)
+	}
+	oc, err := occlient.NewForConfig(restConfig)
+	if err != nil {
+		return "", fmt.Errorf("creating config client: %w", err)
+	}
+	// Bound the detection so a hanging API server cannot block the plugin
+	// initialization; on timeout the provider flag is skipped with a warning.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	infra, err := oc.ConfigV1().Infrastructures().Get(ctx, "cluster", kmmetav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("reading infrastructure cluster: %w", err)
+	}
+	// Prefer status.platformStatus.type, falling back to spec.platformSpec.type
+	// (the field platform.sh uses) when status is not yet populated.
+	platform := ""
+	if infra.Status.PlatformStatus != nil {
+		platform = string(infra.Status.PlatformStatus.Type)
+	}
+	if platform == "" {
+		platform = string(infra.Spec.PlatformSpec.Type)
+	}
+	if strings.EqualFold(platform, "external") {
+		return `{"type":"external"}`, nil
+	}
+	return "", nil
 }
 
 // RunReportProgressUpgrade reports the upgrade progress to aggregator API.

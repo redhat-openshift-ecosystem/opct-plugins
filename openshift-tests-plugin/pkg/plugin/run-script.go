@@ -2,8 +2,8 @@ package plugin
 
 import (
 	"fmt"
-	"html/template"
 	"os"
+	"text/template"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -24,6 +24,11 @@ type OpenShiftTestsRunCommand struct {
 	FromRepository string
 	Options        string
 	File           string
+	// Provider is the value passed to the openshift-tests --provider flag.
+	// Set for platforms that require it, e.g. External (OPCT-357), so tests
+	// configured to skip on that platform are ignored instead of scheduled
+	// as known failures.
+	Provider string
 }
 
 // OpenShiftTestsRunBaseTemplate is the template for the run the openshift-tests command.
@@ -45,6 +50,9 @@ var OpenShiftTestsRunBaseTemplate = `
 {{- end}}
 {{- if .File }}
   --file="{{ .File }}" \
+{{- end}}
+{{- if .Provider }}
+  --provider='{{ .Provider }}' \
 {{- end}}
   | tee -a {{ .FiFoPath }} || true
 `
