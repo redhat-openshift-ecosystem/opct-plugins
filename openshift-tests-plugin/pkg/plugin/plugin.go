@@ -80,8 +80,9 @@ const (
 	PluginAlias99 = "99-openshift-artifacts-collector"
 	PluginSuite99 = "all"
 
-	ExecModeDefault = "default"
-	ExecModeUpgrade = "upgrade"
+	ExecModeDefault      = "default"
+	ExecModeUpgrade      = "upgrade"
+	ExecModeDisconnected = "disconnected"
 )
 
 // Plugin represents the plugin service.
@@ -235,7 +236,7 @@ func pluginIDByName(name string) string {
 func inactiveInWorkflowReason(id, execMode string) string {
 	switch id {
 	case PluginId05:
-		if execMode == ExecModeDefault {
+		if execMode == ExecModeDefault || execMode == ExecModeDisconnected {
 			return fmt.Sprintf("upgrade plugin inactive in non-upgrade workflow (ExecMode=%s)", execMode)
 		}
 	case PluginId10, PluginId20:
@@ -260,6 +261,51 @@ func (p *Plugin) getSuiteName(id string) string {
 	return ""
 }
 
+// LoadEnv load dynamic configuration from environment for plugin variation.
+func (p *Plugin) LoadEnv() error {
+	// OPCT-357: set the openshift-tests provider flag for platforms that
+	// require it, so tests configured to skip on that platform are ignored
+	// instead of scheduled as known failures.
+	envProviderConf := os.Getenv("TEST_PROVIDER")
+	if p.OTRunner != nil && len(envProviderConf) > 0 {
+		p.OTRunner.Provider = envProviderConf
+	}
+
+	// Set top level env vars from config
+	// TODO move env vars discovery to a separate function
+
+	// MIRROR_IMAGE_REPOSITORY is used in disconnected/mirrored environments
+	envMirror := os.Getenv("MIRROR_IMAGE_REPOSITORY")
+	if len(envMirror) > 0 {
+		if p.OTRunner != nil {
+			p.OTRunner.FromRepository = envMirror
+		}
+	}
+
+	// UPGRADE_RELEASES is used to upgrade the cluster
+	envRunMode := os.Getenv("RUN_MODE")
+	if len(envRunMode) > 0 {
+		switch envRunMode {
+		case ExecModeUpgrade:
+			p.ExecMode = ExecModeUpgrade
+		case ExecModeDisconnected:
+			p.ExecMode = ExecModeDisconnected
+		case "normal":
+			p.ExecMode = ExecModeDefault
+		default:
+			p.ExecMode = ExecModeDefault
+		}
+	}
+	envUpgradeRelease := os.Getenv("UPGRADE_RELEASES")
+	if p.ExecMode == ExecModeUpgrade && len(envUpgradeRelease) > 0 {
+		if p.OTRunner != nil {
+			p.OTRunner.ToImage = envUpgradeRelease
+		}
+	}
+
+	return nil
+}
+
 // Initialize resolve all dependencies before running the plugin.
 func (p *Plugin) Initialize() error {
 	// TODO send a message to aggregator indicating for "initialization" state.
@@ -282,49 +328,6 @@ func (p *Plugin) Initialize() error {
 	}
 	p.clientKube = kcli
 	p.clientSonobuoy = sbcli
-
-	// OPCT-357: set the openshift-tests provider flag for platforms that
-	// require it, so tests configured to skip on that platform are ignored
-	// instead of scheduled as known failures.
-	if p.OTRunner != nil {
-		provider, err := p.getClusterProvider()
-		if err != nil {
-			log.Warnf("unable to detect the cluster platform, not setting the provider flag: %v", err)
-		} else if provider != "" {
-			p.OTRunner.Provider = provider
-			log.Infof("Cluster platform requires provider flag: setting openshift-tests --provider=%q", provider)
-		}
-	}
-
-	// Set top level env vars from config
-	// TODO move env vars discovery to a separate function
-
-	// MIRROR_IMAGE_REPOSITORY is used in disconnected/mirrored environments
-	envMirror := os.Getenv("MIRROR_IMAGE_REPOSITORY")
-	if len(envMirror) > 0 {
-		if p.OTRunner != nil {
-			p.OTRunner.FromRepository = envMirror
-		}
-	}
-
-	// UPGRADE_RELEASES is used to upgrade the cluster
-	envRunMode := os.Getenv("RUN_MODE")
-	if len(envRunMode) > 0 {
-		switch envRunMode {
-		case ExecModeUpgrade:
-			p.ExecMode = ExecModeUpgrade
-		case "normal":
-			p.ExecMode = ExecModeDefault
-		default:
-			p.ExecMode = ExecModeDefault
-		}
-	}
-	envUpgradeRelease := os.Getenv("UPGRADE_RELEASES")
-	if p.ExecMode == ExecModeUpgrade && len(envUpgradeRelease) > 0 {
-		if p.OTRunner != nil {
-			p.OTRunner.ToImage = envUpgradeRelease
-		}
-	}
 
 	if p.id == PluginId99 {
 		// TODO extract the results
@@ -648,43 +651,6 @@ func (p *Plugin) RunReportProgress() {
 			log.Infof(">> Preliminary summary: %s", p.Progress.GetTotalCountersString())
 		}
 	}()
-}
-
-// getClusterProvider returns the value for the openshift-tests --provider
-// flag when the cluster's infrastructure platform requires one. Currently
-// only platform type External sets a provider (OPCT-357); on other platforms
-// an empty string is returned and openshift-tests auto-discovers the
-// provider from the cluster.
-func (p *Plugin) getClusterProvider() (string, error) {
-	restConfig, err := CreateKubeRestConfig()
-	if err != nil {
-		return "", fmt.Errorf("creating rest config: %w", err)
-	}
-	oc, err := occlient.NewForConfig(restConfig)
-	if err != nil {
-		return "", fmt.Errorf("creating config client: %w", err)
-	}
-	// Bound the detection so a hanging API server cannot block the plugin
-	// initialization; on timeout the provider flag is skipped with a warning.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	infra, err := oc.ConfigV1().Infrastructures().Get(ctx, "cluster", kmmetav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("reading infrastructure cluster: %w", err)
-	}
-	// Prefer status.platformStatus.type, falling back to spec.platformSpec.type
-	// (the field platform.sh uses) when status is not yet populated.
-	platform := ""
-	if infra.Status.PlatformStatus != nil {
-		platform = string(infra.Status.PlatformStatus.Type)
-	}
-	if platform == "" {
-		platform = string(infra.Spec.PlatformSpec.Type)
-	}
-	if strings.EqualFold(platform, "external") {
-		return `{"type":"external"}`, nil
-	}
-	return "", nil
 }
 
 // RunReportProgressUpgrade reports the upgrade progress to aggregator API.

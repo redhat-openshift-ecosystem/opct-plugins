@@ -65,6 +65,9 @@ func StartRun(opt *OptionsRun) error {
 	}
 	defer pl.Done()
 
+	if err = pl.LoadEnv(); err != nil {
+		return fmt.Errorf("unable to initialize configuration for plugin %s: %w", pluginName, err)
+	}
 	if err = pl.Initialize(); err != nil {
 		return fmt.Errorf("unable to initialize plugin %s: %w", pluginName, err)
 	}

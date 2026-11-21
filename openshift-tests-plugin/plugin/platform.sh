@@ -117,6 +117,10 @@ function setup_provider_external() {
     # The provider flag is also set by the plugin on the run command; this
     # keeps the platform-args metadata consistent with other providers.
     export TEST_PROVIDER='{"type":"external"}'
+    if [ "${RUN_MODE:-}" == "disconnected" ]; then
+        export TEST_PROVIDER='{"type":"external", "Disconnected":true}'
+    fi
+
     OPENSHIFT_TESTS_EXTRA_ARGS+="--provider ${TEST_PROVIDER}"
 
     echo "${OPENSHIFT_TESTS_EXTRA_ARGS}" > /tmp/shared/platform-args

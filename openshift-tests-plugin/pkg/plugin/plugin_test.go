@@ -313,6 +313,27 @@ func TestWorkflowGuardSkipMatrix(t *testing.T) {
 			execMode:   ExecModeUpgrade,
 			wantSkip:   true,
 		},
+		// Plugin 05: skip in disconnected (same as default)
+		{
+			name:       "Plugin05 disconnected mode should skip",
+			pluginName: PluginName05,
+			execMode:   ExecModeDisconnected,
+			wantSkip:   true,
+		},
+		// Plugin 10: run in disconnected (same as default)
+		{
+			name:       "Plugin10 disconnected mode should run",
+			pluginName: PluginName10,
+			execMode:   ExecModeDisconnected,
+			wantSkip:   false,
+		},
+		// Plugin 20: run in disconnected (same as default)
+		{
+			name:       "Plugin20 disconnected mode should run",
+			pluginName: PluginName20,
+			execMode:   ExecModeDisconnected,
+			wantSkip:   false,
+		},
 		// Plugin 80 (replay): always active
 		{
 			name:       "Plugin80 default mode should run",
@@ -324,6 +345,12 @@ func TestWorkflowGuardSkipMatrix(t *testing.T) {
 			name:       "Plugin80 upgrade mode should run",
 			pluginName: PluginName80,
 			execMode:   ExecModeUpgrade,
+			wantSkip:   false,
+		},
+		{
+			name:       "Plugin80 disconnected mode should run",
+			pluginName: PluginName80,
+			execMode:   ExecModeDisconnected,
 			wantSkip:   false,
 		},
 	}
@@ -629,5 +656,174 @@ func TestDependencyWaiterNoBlockerReturnsNil(t *testing.T) {
 	}
 	if err := p.RunDependencyWaiter(); err != nil {
 		t.Errorf("RunDependencyWaiter() with no blocker = %v, want nil", err)
+	}
+}
+
+// newLoadEnvTestPlugin returns a plugin with an OTRunner (when withRunner is
+// true) and the given initial ExecMode.
+func newLoadEnvTestPlugin(t *testing.T, withRunner bool, execMode string) *Plugin {
+	t.Helper()
+	p := &Plugin{ExecMode: execMode}
+	if withRunner {
+		p.OTRunner = NewOpenShiftRunCommand("run", "openshift/conformance")
+	}
+	return p
+}
+
+func TestLoadEnv(t *testing.T) {
+	const (
+		envProvider      = "TEST_PROVIDER"
+		envMirror        = "MIRROR_IMAGE_REPOSITORY"
+		envRunMode       = "RUN_MODE"
+		envUpgradeRel    = "UPGRADE_RELEASES"
+		provExternalVal  = `{"type":"external"}`
+		provExternalDVal = `{"type":"external","Disconnected":true}`
+	)
+
+	tests := []struct {
+		name        string
+		env         map[string]string
+		withRunner  bool
+		execMode    string
+		wantExec    string
+		wantProv    string
+		wantMirror  string
+		wantToImage string
+	}{
+		{
+			name:       "no env vars leaves defaults untouched",
+			withRunner: true,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeDefault,
+		},
+		{
+			name:       "TEST_PROVIDER sets runner provider",
+			env:        map[string]string{envProvider: provExternalVal},
+			withRunner: true,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeDefault,
+			wantProv:   provExternalVal,
+		},
+		{
+			name:       "TEST_PROVIDER sets runner provider for disconnected",
+			env:        map[string]string{envProvider: provExternalDVal},
+			withRunner: true,
+			execMode:   ExecModeDisconnected,
+			wantExec:   ExecModeDisconnected,
+			wantProv:   provExternalDVal,
+		},
+		{
+			name:       "TEST_PROVIDER without runner does not panic",
+			env:        map[string]string{envProvider: provExternalVal},
+			withRunner: false,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeDefault,
+		},
+		{
+			name:       "MIRROR_IMAGE_REPOSITORY sets runner from repository",
+			env:        map[string]string{envMirror: "mirror.example.com/ocp"},
+			withRunner: true,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeDefault,
+			wantMirror: "mirror.example.com/ocp",
+		},
+		{
+			name:       "MIRROR_IMAGE_REPOSITORY without runner does not panic",
+			env:        map[string]string{envMirror: "mirror.example.com/ocp"},
+			withRunner: false,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeDefault,
+		},
+		{
+			name:       "RUN_MODE=upgrade switches to upgrade mode",
+			env:        map[string]string{envRunMode: ExecModeUpgrade},
+			withRunner: true,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeUpgrade,
+		},
+		{
+			name:       "RUN_MODE=normal switches to default mode",
+			env:        map[string]string{envRunMode: "normal"},
+			withRunner: true,
+			execMode:   ExecModeUpgrade,
+			wantExec:   ExecModeDefault,
+		},
+		{
+			name:       "unknown RUN_MODE falls back to default mode",
+			env:        map[string]string{envRunMode: "bogus"},
+			withRunner: true,
+			execMode:   ExecModeUpgrade,
+			wantExec:   ExecModeDefault,
+		},
+		{
+			name:       "RUN_MODE=disconnected preserves disconnected mode",
+			env:        map[string]string{envRunMode: ExecModeDisconnected},
+			withRunner: true,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeDisconnected,
+		},
+		{
+			name:       "unset RUN_MODE keeps current mode",
+			withRunner: true,
+			execMode:   ExecModeUpgrade,
+			wantExec:   ExecModeUpgrade,
+		},
+		{
+			name:        "UPGRADE_RELEASES applies in upgrade mode",
+			env:         map[string]string{envRunMode: ExecModeUpgrade, envUpgradeRel: "4.18.0"},
+			withRunner:  true,
+			execMode:    ExecModeDefault,
+			wantExec:    ExecModeUpgrade,
+			wantToImage: "4.18.0",
+		},
+		{
+			name:        "UPGRADE_RELEASES ignored in default mode",
+			env:         map[string]string{envUpgradeRel: "4.18.0"},
+			withRunner:  true,
+			execMode:    ExecModeDefault,
+			wantExec:    ExecModeDefault,
+			wantToImage: "",
+		},
+		{
+			name:       "UPGRADE_RELEASES without runner does not panic",
+			env:        map[string]string{envRunMode: ExecModeUpgrade, envUpgradeRel: "4.18.0"},
+			withRunner: false,
+			execMode:   ExecModeDefault,
+			wantExec:   ExecModeUpgrade,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// t.Setenv restores the original values on cleanup. Empty string is
+			// treated as unset by LoadEnv, so clear every variable first.
+			for _, k := range []string{envProvider, envMirror, envRunMode, envUpgradeRel} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			p := newLoadEnvTestPlugin(t, tc.withRunner, tc.execMode)
+			if err := p.LoadEnv(); err != nil {
+				t.Fatalf("LoadEnv() returned unexpected error: %v", err)
+			}
+
+			if p.ExecMode != tc.wantExec {
+				t.Errorf("ExecMode = %q, want %q", p.ExecMode, tc.wantExec)
+			}
+			if !tc.withRunner {
+				return
+			}
+			if p.OTRunner.Provider != tc.wantProv {
+				t.Errorf("OTRunner.Provider = %q, want %q", p.OTRunner.Provider, tc.wantProv)
+			}
+			if p.OTRunner.FromRepository != tc.wantMirror {
+				t.Errorf("OTRunner.FromRepository = %q, want %q", p.OTRunner.FromRepository, tc.wantMirror)
+			}
+			if p.OTRunner.ToImage != tc.wantToImage {
+				t.Errorf("OTRunner.ToImage = %q, want %q", p.OTRunner.ToImage, tc.wantToImage)
+			}
+		})
 	}
 }
